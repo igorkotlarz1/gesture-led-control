@@ -7,9 +7,14 @@ import numpy as np
 import cv2
 import time
 
+class SystemState:
+    CALIBRATE_MIN = 0
+    CALIBRATE_MAX = 1
+    ACTIVE = 2
+
 class GestureSystem:
     def __init__(self):
-        self.STATE = 0
+        self.STATE = SystemState.CALIBRATE_MIN
 
         self.DIST_MIN = 0
         self.DIST_MAX = 0
@@ -20,7 +25,7 @@ class GestureSystem:
         self.last_bright = 0
         self.last_rgb = (0,0,0)
 
-        self.msg = ""
+        self.msg = ''
         self.msg_time = 0.0
 
         self.frame_count = 0
@@ -42,7 +47,26 @@ class GestureSystem:
         self.mqtt = MQTTClient()
         time.sleep(1)
 
+        self.mqtt_enabled = self.mqtt.connected
+        self.last_mqtt_check = 0
+        self.publish_state(state='on')
+
         self.last_active = time.time()
+
+    def _publish_current_state(self):
+        """Publikuje aktualny stan systemu"""
+        state = ""
+        if self.STATE == SystemState.SLEEP:
+            state = "sleep"
+        elif self.STATE == SystemState.ACTIVE:
+            state = "active"
+        elif self.STATE == SystemState.CALIBRATE_MIN or self.STATE == SystemState.CALIBRATE_MAX:
+            state = "calibrating"
+        
+        self.mqtt.publish_system_state(state)
+
+    def publish_state(self, state):
+        self.mqtt.publish_system_state(state)
 
     def calculate_brightness(self, distance):
         raw_val = np.interp(distance, [self.DIST_MIN, self.DIST_MAX], [0,100])
@@ -78,7 +102,7 @@ class GestureSystem:
         cv2.circle(frame, index, 7, self.purple, cv2.FILLED) #punkt na palcu wskazujacym
         cv2.circle(frame, thumb, 7, self.purple, cv2.FILLED) #punkt na kciuku
 
-        if self.STATE == 2:
+        if self.STATE == SystemState.ACTIVE:
             text = f'Brightness: {brightness}%'
         else:
             text = f'Distance: {distance:.0f} px'
@@ -89,23 +113,23 @@ class GestureSystem:
     def _approve_brightness(self, distance, brightness):
         t = time.time()
 
-        if self.STATE == 0:
+        if self.STATE == SystemState.CALIBRATE_MIN:
             self.DIST_MIN = int(distance)
             self.msg = f'MIN: {self.DIST_MIN } px'
-            self.STATE = 1
+            self.STATE = SystemState.CALIBRATE_MAX
             self.msg_time = t
-        elif self.STATE == 1:
+
+        elif self.STATE == SystemState.CALIBRATE_MAX:
             self.DIST_MAX = int(distance)
-            self.msg = f'MIN: {distance} px'
 
             if self.DIST_MAX > self.DIST_MIN:
                 self.msg = f'MAX: {self.DIST_MAX } px'
-                self.STATE = 2
+                self.STATE = SystemState.ACTIVE
             else:
                 self.msg = 'ERROR: MIN>MAX'
-                self.STATE = 0
+                self.STATE = SystemState.CALIBRATE_MIN
             self.msg_time = t
-        elif self.STATE == 2 and brightness != self.last_bright:
+        elif self.STATE == SystemState.ACTIVE and brightness != self.last_bright:
             success = self.mqtt.publish_brightness(brightness)
             self.last_bright = brightness
             if success:                                  
@@ -115,7 +139,7 @@ class GestureSystem:
             self.msg_time = t
 
     def handle_left(self, frame, landmarks):
-        if self.STATE < 2:
+        if self.STATE != SystemState.ACTIVE:
             return False
         
         if len(landmarks) != 9:
@@ -172,15 +196,13 @@ class GestureSystem:
 
             if inactive > Config.INACTIVITY_LIMIT:
                 print('AUTO SHUTDOWN')
+                self.publish_state('off')
                 break
 
             frame = cv2.flip(frame, 1)
-           # if self.frame_count % Config.PROCESS_EV_N_FRAMES == 0:
+
             frame, detected = self.detector.detect_hands(frame)
             hand_type = self.detector.get_handedness()
-            #else:
-                #detected=False
-               # hand_type=None
 
             square_color = self.yellow if self.STATE < 2 else self.grey
             active = False
@@ -198,12 +220,12 @@ class GestureSystem:
 
             cv2.rectangle(frame, (Config.SQ_X1, Config.SQ_Y1), (Config.SQ_X2, Config.SQ_Y2), square_color, 2) #ramka 
 
-            if self.STATE == 0:
-                info_msg = "CALIBRATION: Pinch, OK=Pinky"
-            elif self.STATE == 1:
-                info_msg = "CALIBRATION: Strech out, OK=Pinky"
-            else:
+            if self.STATE == SystemState.ACTIVE:
                 info_msg = "[LEFT] COLOR, [RIGHT] BRIGHTNESS"
+            elif self.STATE == SystemState.CALIBRATE_MAX:
+                info_msg = "CALIBRATION: Stretch out, OK=Pinky"
+            elif self.STATE == SystemState.CALIBRATE_MIN:
+                info_msg = "CALIBRATION: Pinch, OK=Pinky"
 
             self.draw_text(frame, info_msg, (Config.SQ_X1, Config.SQ_Y1-25), 0.6, self.yellow)
 
@@ -214,8 +236,18 @@ class GestureSystem:
             if t - self.msg_time < Config.FEEDBACK_DURATION:
                 self.draw_text(frame, self.msg, (Config.SQ_X1, Config.SQ_Y2+25), 0.6, self.green)
 
+            if t -self.last_mqtt_check >= Config.MQTT_CHECK_INTERVAL:
+                self.mqtt_enabled = self.mqtt.connected
+                self.last_mqtt_check = t
+
+            mqtt_text = "MQTT Enabled" if self.mqtt_enabled else "MQTT Disabled"
+            mqtt_color = self.green if self.mqtt_enabled else self.red
+            self.draw_text(frame, mqtt_text, (10, Config.CAM_H - 20), 0.5, mqtt_color)
+
             cv2.imshow('Gesture LED Control', frame)
+            
             if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.publish_state('off')
                 break
         
         self.cleanup()

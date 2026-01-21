@@ -8,6 +8,7 @@ class MQTTClient:
         self.connected = False
         self.last_brightness = None
         self.last_color = None
+        self.last_state = None
 
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
@@ -26,7 +27,7 @@ class MQTTClient:
     
     def publish_brightness(self, value: int) -> bool:
         if not self.connected:
-            print(f'[MQTT] OFFLINE - brightness: {value}%')
+            #print(f'[MQTT] OFFLINE - brightness: {value}%')
             return False
         
         if value == self.last_brightness:
@@ -41,7 +42,7 @@ class MQTTClient:
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 self.last_brightness = value
-                print(f'[MQTT] Sent brightness: {value}%')
+                #print(f'[MQTT] Sent brightness: {value}%')
                 return True
             else:
                 print(f'[MQTT] Error sending brightness: {result.rc}')
@@ -53,7 +54,7 @@ class MQTTClient:
     
     def publish_color(self, r: int, g: int, b: int) -> bool:
         if not self.connected:
-            print(f'[MQTT] OFFLINE - RGB: ({r},{g},{b})')
+            #print(f'[MQTT] OFFLINE - RGB: ({r},{g},{b})')
             return False
         
         rgb = (r, g, b)
@@ -66,7 +67,7 @@ class MQTTClient:
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 self.last_color = rgb
-                print(f'[MQTT] Sent RGB: ({r},{g},{b})')
+                #print(f'[MQTT] Sent RGB: ({r},{g},{b})')
                 return True
             else:
                 print(f'[MQTT] Error sending color: {result.rc}')
@@ -75,7 +76,20 @@ class MQTTClient:
         except Exception as e:
             print(f"[MQTT] Exception while sending color: {e}")
             return False
+    
+    def publish_system_state(self, state: str):
+        if state == self.last_state or not self.connected:
+            return
         
+        try:
+            result = self.client.publish(Config.MQTT_TOPIC_SYSTEM_STATE, state)
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                self.last_state = state
+                print(f'[MQTT] Published system state: {state.upper()}')
+        except Exception as e:
+            print(f'[MQTT] Error publishing state: {e}')
+
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.connected = True
